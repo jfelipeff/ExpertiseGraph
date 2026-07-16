@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from app.config import get_settings
@@ -32,14 +33,17 @@ DEMO_DOC_META = {
 def sample_docs_dir() -> Path:
     settings = get_settings()
     candidates = [
+        Path(os.environ["SAMPLE_DOCS_DIR"]) if os.environ.get("SAMPLE_DOCS_DIR") else None,
         Path("/app/sample_docs"),
+        settings.sample_docs_dir,
         settings.upload_dir.parent / "sample_docs",
         Path(__file__).resolve().parents[2] / "sample_docs",
     ]
     for path in candidates:
-        if path.is_dir():
+        if path is not None and path.is_dir():
             return path
-    return candidates[0]
+    return Path("/app/sample_docs")
+
 
 
 def list_demo_documents() -> list[dict]:
