@@ -1,0 +1,36 @@
+# ExpertiseGraph backend on Render (free web service)
+# Prerequisites:
+#   1. Neo4j Aura Free instance → set NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD
+#   2. XAI_API_KEY for Grok
+#
+# Deploy: connect this GitHub repo in Render, or: `render blueprint launch`
+
+services:
+  - type: web
+    name: expertisegraph-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHONPATH
+        value: /app
+      - key: LLM_MODEL
+        value: grok-3-mini
+      - key: TOKEN_CHUNK_SIZE
+        value: "400"
+      - key: CHUNK_OVERLAP
+        value: "40"
+      - key: NEO4J_DATABASE
+        value: neo4j
+      - key: UPLOAD_DIR
+        value: /app/uploads
+      - key: XAI_API_KEY
+        sync: false
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USERNAME
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false
