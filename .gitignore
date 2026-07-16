@@ -1,9 +1,11 @@
-uploads/
+node_modules/
+frontend/node_modules/
+frontend/dist/
 .env
+uploads/
 **/__pycache__/
 **/*.pyc
 .venv/
-node_modules/
-frontend/dist/
+.vercel/
 *.egg-info/
 .DS_Store
