@@ -23,18 +23,35 @@ async def lifespan(app: FastAPI):
     import asyncio
 
     client = get_neo4j()
+    neo_ok = False
     for attempt in range(30):
         try:
             client.verify()
             init_schema(client)
             logger.info("Neo4j connected and schema initialized")
+            neo_ok = True
             break
         except Exception as exc:
             logger.warning("Waiting for Neo4j (%s/30): %s", attempt + 1, exc)
             await asyncio.sleep(2)
     else:
         logger.error("Neo4j unavailable at startup — API will still boot")
+
+    # Persist example in Aura once per empty DB; later deploys/restarts reuse it
+    seed_task = None
+    if neo_ok and settings.seed_demo_on_startup:
+        from app.demo_seed import ensure_demo_seeded
+
+        seed_task = asyncio.create_task(ensure_demo_seeded())
+
     yield
+
+    if seed_task and not seed_task.done():
+        seed_task.cancel()
+        try:
+            await seed_task
+        except asyncio.CancelledError:
+            pass
     try:
         client.close()
     except Exception:

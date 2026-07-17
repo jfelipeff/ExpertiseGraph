@@ -64,31 +64,42 @@ export default function App() {
   );
   const ingesting = !!(job && job.status !== "failed" && job.status !== "completed" && job.status !== "completed_with_errors");
 
-  useEffect(() => {
-    getDemoInfo()
-      .then(setDemoInfo)
-      .catch(() => undefined);
-  }, []);
-
   // Restore UI + Neo4j corpus on reload
   useEffect(() => {
     (async () => {
       const saved = loadPersisted();
       try {
-        const [docPayload, insightPayload, graphPayload] = await Promise.all([
+        const [docPayload, insightPayload, graphPayload, demo] = await Promise.all([
           documents().catch(() => ({ documents: [] })),
           getInsights().catch(() => null),
           getGraph().catch(() => ({ nodes: [], edges: [] })),
+          getDemoInfo().catch(() => null),
         ]);
-        const hasData = (docPayload.documents?.length || 0) > 0 || (graphPayload.nodes?.length || 0) > 0;
+        if (demo) setDemoInfo(demo);
 
-        if (saved?.mode && saved.mode !== "choose") {
+        const hasData =
+          demo?.graph_ready ||
+          (docPayload.documents?.length || 0) > 0 ||
+          (graphPayload.nodes?.length || 0) > 0;
+
+        // Prefer the shared pre-built example (seeded on API deploy)
+        if (demo?.graph_ready || demo?.seeding) {
+          setMode("demo");
+          if (demo.firm) {
+            setFirm({
+              name: demo.firm.name,
+              description: demo.firm.description,
+              industry: demo.firm.industry,
+              notes: demo.firm.notes || "",
+            });
+          }
+        } else if (saved?.mode && saved.mode !== "choose") {
           setMode(saved.mode);
         } else if (hasData) {
           setMode(saved?.mode === "custom" ? "custom" : "demo");
         }
 
-        if (saved?.firm) setFirm(saved.firm);
+        if (saved?.firm && !demo?.graph_ready) setFirm(saved.firm);
         if (saved?.sidebar) setSidebar(saved.sidebar as SidebarView);
         if (typeof saved?.showGraph === "boolean") setShowGraph(saved.showGraph);
 
@@ -96,9 +107,20 @@ export default function App() {
           setDocs(docPayload.documents || []);
           if (insightPayload) setInsights(insightPayload);
           setGraphData(graphPayload);
+          if (demo?.graph_ready) {
+            setJob({
+              id: "demo-cached",
+              status: "completed",
+              stage: "cached",
+              progress: 100,
+              file_stages: {},
+              decisions: {},
+              stats: {},
+            });
+          }
         }
 
-        if (saved?.jobId) {
+        if (saved?.jobId && saved.jobId !== "demo-cached") {
           try {
             const existing = await getJob(saved.jobId);
             setJob(existing);
@@ -111,6 +133,41 @@ export default function App() {
       }
     })();
   }, []);
+
+  // While the API is seeding the shared example on deploy, poll until ready
+  useEffect(() => {
+    if (!hydrated || !demoInfo?.seeding || demoInfo.graph_ready) return;
+    const t = setInterval(async () => {
+      try {
+        const demo = await getDemoInfo();
+        setDemoInfo(demo);
+        if (demo.graph_ready) {
+          const [docPayload, insightPayload, graphPayload] = await Promise.all([
+            documents(),
+            getInsights(),
+            getGraph(),
+          ]);
+          setDocs(docPayload.documents || []);
+          setInsights(insightPayload);
+          setGraphData(graphPayload);
+          setJob({
+            id: "demo-cached",
+            status: "completed",
+            stage: "cached",
+            progress: 100,
+            file_stages: {},
+            decisions: {},
+            stats: {},
+          });
+          setMode("demo");
+          setSidebar("overview");
+        }
+      } catch {
+        // ignore transient errors while Render wakes / seed runs
+      }
+    }, 2500);
+    return () => clearInterval(t);
+  }, [hydrated, demoInfo?.seeding, demoInfo?.graph_ready]);
 
   useEffect(() => {
     if (!hydrated || mode === "choose") return;
@@ -179,11 +236,55 @@ export default function App() {
     }
   }
 
-  async function onStartDemo() {
+  async function onOpenDemo() {
+    setError(null);
+    setBusy(true);
+    setMode("demo");
+    try {
+      const info = demoInfo || (await getDemoInfo());
+      setDemoInfo(info);
+      if (info.firm) {
+        setFirm({
+          name: info.firm.name,
+          description: info.firm.description,
+          industry: info.firm.industry,
+          notes: info.firm.notes || "",
+        });
+      }
+
+      // Prefer cached graph (no tokens). Only ingest if Neo4j does not have the example yet.
+      const created = await startDemo(false);
+      setJob(created);
+
+      if (created.status === "completed" || created.stage === "cached") {
+        const [docPayload, insightPayload, graphPayload] = await Promise.all([
+          documents(),
+          getInsights(),
+          getGraph(),
+        ]);
+        setDocs(docPayload.documents);
+        setInsights(insightPayload);
+        setGraphData(graphPayload);
+        setSidebar("overview");
+      }
+    } catch (e: any) {
+      setError(e.message);
+      setMode("choose");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRebuildDemo() {
+    const ok = window.confirm(
+      "Rebuild the shared example graph? This clears Neo4j data and re-runs the LLM (uses tokens for everyone)."
+    );
+    if (!ok) return;
     setError(null);
     setBusy(true);
     setMode("demo");
     setInsights(null);
+    setDocs([]);
     try {
       const created = await startDemo(true);
       setJob(created);
@@ -197,7 +298,6 @@ export default function App() {
       }
     } catch (e: any) {
       setError(e.message);
-      setMode("choose");
     } finally {
       setBusy(false);
     }
@@ -241,15 +341,19 @@ export default function App() {
 
           <div className="animate-rise-delay mt-12 grid gap-6 md:grid-cols-2">
             <button
-              onClick={onStartDemo}
+              onClick={onOpenDemo}
               disabled={busy}
               className="group border border-moss/20 bg-white/70 p-8 text-left transition hover:border-fern hover:bg-white disabled:opacity-60"
             >
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-ember">Example mode</p>
               <h2 className="mt-3 font-display text-3xl text-moss">See how a graph looks</h2>
               <p className="mt-3 text-sm leading-relaxed text-ink/65">
-                {demoInfo?.description ||
-                  "Load sample research and explore a dense example graph."}
+                {demoInfo?.graph_ready
+                  ? "Open the shared StratCore example — already loaded on the server for every visitor."
+                  : demoInfo?.seeding
+                    ? "The server is seeding the shared example after deploy. You can wait here or refresh shortly."
+                    : demoInfo?.description ||
+                      "Load sample research and explore a dense example graph."}
               </p>
               <ul className="mt-5 space-y-2 text-sm text-ink/70">
                 {(demoInfo?.documents || []).map((d) => (
@@ -260,7 +364,13 @@ export default function App() {
                 ))}
               </ul>
               <span className="mt-8 inline-block bg-ember px-4 py-2 text-sm font-semibold text-sand">
-                {busy ? "Building example…" : "Build example graph"}
+                {busy
+                  ? demoInfo?.graph_ready
+                    ? "Opening…"
+                    : "Building example…"
+                  : demoInfo?.graph_ready
+                    ? "Explore example graph"
+                    : "Build example graph"}
               </span>
             </button>
 
@@ -392,7 +502,9 @@ export default function App() {
                     <>
                       <h2 className="font-display text-3xl text-moss">Example corpus</h2>
                       <p className="mt-2 text-ink/65">
-                        Building a knowledge graph from StratCore consulting project reports (Atlas & Orion).
+                        {demoInfo?.seeding
+                          ? "The shared example is being built once on the server (deploy seed). This page will open automatically when it’s ready — visitors after you won’t pay this cost."
+                          : "Building a knowledge graph from StratCore consulting project reports (Atlas & Orion)."}
                       </p>
                       <div className="mt-6 space-y-4">
                         {(demoInfo?.documents || []).map((d) => (
@@ -402,14 +514,20 @@ export default function App() {
                           </article>
                         ))}
                       </div>
-                      {!ingesting && (
+                      {demoInfo?.seed_error && (
+                        <p className="mt-4 text-sm text-ember">{demoInfo.seed_error}</p>
+                      )}
+                      {!ingesting && !demoInfo?.seeding && (
                         <button
-                          onClick={onStartDemo}
+                          onClick={onOpenDemo}
                           disabled={busy}
                           className="mt-6 bg-ember px-5 py-3 font-semibold text-sand disabled:opacity-50"
                         >
-                          {busy ? "Starting…" : "Build example graph"}
+                          {busy ? "Starting…" : demoInfo?.graph_ready ? "Open example graph" : "Build example graph"}
                         </button>
+                      )}
+                      {demoInfo?.seeding && (
+                        <p className="mt-6 text-sm font-semibold text-moss">Seeding shared example…</p>
                       )}
                     </>
                   ) : (
@@ -578,7 +696,7 @@ export default function App() {
                 </button>
                 {mode === "demo" && (
                   <button
-                    onClick={onStartDemo}
+                    onClick={onRebuildDemo}
                     disabled={busy || ingesting}
                     className="bg-ember/15 px-3 py-2 text-sm font-semibold text-ember hover:bg-ember/25 disabled:opacity-40"
                   >

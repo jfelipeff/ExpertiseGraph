@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from app.config import get_settings
 
@@ -15,6 +16,9 @@ DEMO_FIRM = {
     "industry": "Management Consulting",
     "notes": "Example mode sample for ExpertiseGraph.",
 }
+
+# LLM-extracted edges use ~0.82; heuristic co-occurrence uses ~0.58
+_LLM_CONFIDENCE_FLOOR = 0.75
 
 DEMO_DOC_META = {
     "StratCore_Project_Atlas_Final_Report.pdf": {
@@ -76,3 +80,85 @@ def demo_file_paths() -> list[Path]:
     if paths:
         return paths
     return sorted(root.glob("*.pdf"))
+
+
+def expected_demo_filenames() -> list[str]:
+    paths = demo_file_paths()
+    if paths:
+        return [p.name for p in paths]
+    return list(DEMO_DOC_META.keys())
+
+
+def demo_graph_status() -> dict[str, Any]:
+    """Whether the shared Aura/Neo4j already holds the StratCore example corpus."""
+    from app.graph.neo4j_client import get_neo4j
+
+    expected = expected_demo_filenames()
+    empty: dict[str, Any] = {
+        "graph_ready": False,
+        "quality": "empty",
+        "documents": 0,
+        "entities": 0,
+        "relationships": 0,
+        "llm_relationships": 0,
+        "expected_documents": expected,
+        "missing_documents": expected,
+        "has_demo_firm": False,
+    }
+    try:
+        neo = get_neo4j()
+        doc_rows = neo.run(
+            """
+            MATCH (d:Document)
+            WHERE d.filename IN $filenames
+            RETURN collect(DISTINCT d.filename) AS present
+            """,
+            {"filenames": expected},
+        )
+        present = list((doc_rows[0].get("present") if doc_rows else None) or [])
+        present = [p for p in present if p]
+
+        firm_rows = neo.run(
+            "MATCH (f:Firm {id: $firm_id}) RETURN count(f) AS n",
+            {"firm_id": DEMO_FIRM["id"]},
+        )
+        has_firm = bool(firm_rows and (firm_rows[0].get("n") or 0) > 0)
+
+        ent_rows = neo.run("MATCH (e:Entity) RETURN count(e) AS n")
+        entities = int((ent_rows[0].get("n") if ent_rows else 0) or 0)
+
+        rel_rows = neo.run(
+            """
+            MATCH ()-[r:RELATED]->()
+            RETURN count(r) AS relationships,
+                   sum(CASE WHEN coalesce(r.confidence, 0) >= $llm_floor THEN 1 ELSE 0 END) AS llm_relationships
+            """,
+            {"llm_floor": _LLM_CONFIDENCE_FLOOR},
+        )
+        relationships = int((rel_rows[0].get("relationships") if rel_rows else 0) or 0)
+        llm_relationships = int((rel_rows[0].get("llm_relationships") if rel_rows else 0) or 0)
+    except Exception:
+        return empty
+
+    missing = [n for n in expected if n not in present]
+    graph_ready = len(missing) == 0 and entities > 0 and relationships > 0
+    if llm_relationships > 0:
+        quality = "llm"
+    elif relationships > 0:
+        quality = "heuristic"
+    elif present:
+        quality = "partial"
+    else:
+        quality = "empty"
+
+    return {
+        "graph_ready": graph_ready,
+        "quality": quality,
+        "documents": len(present),
+        "entities": entities,
+        "relationships": relationships,
+        "llm_relationships": llm_relationships,
+        "expected_documents": expected,
+        "missing_documents": missing,
+        "has_demo_firm": has_firm,
+    }

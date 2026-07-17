@@ -95,13 +95,21 @@ export type DemoInfo = {
     size_mb: number;
   }>;
   description: string;
+  graph_ready?: boolean;
+  quality?: "llm" | "heuristic" | "partial" | "empty" | string;
+  entities?: number;
+  relationships?: number;
+  llm_relationships?: number;
+  seeding?: boolean;
+  seed_error?: string | null;
 };
 
 export async function getDemoInfo() {
   return handle<DemoInfo>(await fetch(`${API_BASE}/demo`));
 }
 
-export async function startDemo(reset = true) {
+/** Open shared example. reset=true wipes Neo4j and re-runs LLM (expensive). */
+export async function startDemo(reset = false) {
   return handle<Job>(
     await fetch(`${API_BASE}/demo/start?reset=${reset ? "true" : "false"}`, {
       method: "POST",

@@ -23,7 +23,9 @@ services:
       - key: CHUNK_OVERLAP
         value: "40"
       - key: NEO4J_DATABASE
-        value: neo4j
+        value: ""
+      - key: SEED_DEMO_ON_STARTUP
+        value: "true"
       - key: UPLOAD_DIR
         value: /app/uploads
       - key: XAI_API_KEY

@@ -14,7 +14,11 @@ class Settings(BaseSettings):
     neo4j_uri: str = "bolt://neo4j:7687"
     neo4j_username: str = "neo4j"
     neo4j_password: str = "fulcrumgraph"
-    neo4j_database: str = "neo4j"
+    # Leave empty on Aura Free to use the instance home database
+    neo4j_database: str = ""
+
+    # On boot: if Aura has no StratCore example yet, ingest it once (uses LLM tokens once)
+    seed_demo_on_startup: bool = True
 
     # xAI Grok — also accepts GROK_API_KEY
     xai_api_key: str = Field(
