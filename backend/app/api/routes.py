@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 
 from app.api.schemas import ChatIn, ExpertIn, JobOut
 from app.config import get_settings
-from app.demo_corpus import DEMO_FIRM, demo_file_paths, list_demo_documents
+from app.demo_corpus import DEMO_FIRM, demo_file_paths, demo_graph_status, list_demo_documents
 from app.graph.explorer import GraphExplorer
 from app.graph.neo4j_client import get_neo4j
 from app.ingestion.pipeline import get_job, run_ingestion
@@ -109,26 +109,72 @@ def _clear_knowledge_graph() -> None:
 
 @router.get("/demo")
 async def demo_info():
+    from app.demo_seed import seed_status
+
     docs = list_demo_documents()
+    status = demo_graph_status()
+    seeding = seed_status()
     return {
         "mode": "example",
         "firm": DEMO_FIRM,
         "documents": docs,
         "description": (
-            "Load McKinsey Global Institute research on the next big arenas of competition "
-            "to preview a dense, relationship-rich knowledge graph before uploading your own files."
+            "The StratCore example graph is loaded once when the API deploys into Neo4j Aura, "
+            "then shared with every visitor — no per-visit rebuild."
         ),
+        **status,
+        **seeding,
+    }
+
+
+def _cached_demo_job(display_names: list[str], status: dict) -> dict:
+    return {
+        "id": "demo-cached",
+        "status": "completed",
+        "stage": "cached",
+        "progress": 100,
+        "firm_id": DEMO_FIRM["id"],
+        "files": display_names,
+        "file_stages": {
+            n: {"stage": "cached", "detail": "Using pre-built example graph (no LLM tokens)"}
+            for n in display_names
+        },
+        "decisions": {},
+        "stats": {
+            "documents": status.get("documents", 0),
+            "entities": status.get("entities", 0),
+            "relationships": status.get("relationships", 0),
+            "quality": status.get("quality"),
+            "cached": True,
+        },
+        "error": None,
+        "mode": "demo",
     }
 
 
 @router.post("/demo/start", response_model=JobOut)
-async def demo_start(background_tasks: BackgroundTasks, reset: bool = True):
+async def demo_start(background_tasks: BackgroundTasks, reset: bool = False):
+    """Open the shared example graph, or rebuild when reset=true.
+
+    Default (reset=false): if StratCore is already in Neo4j, return a completed cached job
+    and do not call the LLM. reset=true wipes domain data and re-ingests (uses tokens).
+    """
     paths = demo_file_paths()
     if not paths:
         raise HTTPException(
             404,
-            "No demo PDFs found in sample_docs/. Expected the arenas-of-competition reports.",
+            "No demo PDFs found in sample_docs/. Expected StratCore Atlas/Orion reports.",
         )
+
+    display_names = [p.name for p in paths]
+    status = demo_graph_status()
+
+    if status.get("graph_ready") and not reset:
+        job = _cached_demo_job(display_names, status)
+        from app.ingestion import pipeline as pipe
+
+        pipe.JOBS[job["id"]] = job
+        return JobOut(**{k: v for k, v in job.items() if k != "mode"})
 
     if reset:
         try:
@@ -137,7 +183,6 @@ async def demo_start(background_tasks: BackgroundTasks, reset: bool = True):
             logger.warning("Demo reset failed: %s", exc)
 
     job_id = str(uuid.uuid4())
-    display_names = [p.name for p in paths]
 
     from app.ingestion import pipeline as pipe
 
